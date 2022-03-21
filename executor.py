@@ -559,7 +559,7 @@ class AlbefGradcamExecutor(AlbefExecutor):
         return torch.stack(scores).to(self.device)
 
 class MdetrExecutor(Executor):
-    def __init__(self, model_name: str, device: str = "cpu", use_token_mapping: bool = False, enlarge_boxes: int = 0, expand_position_embedding: bool = False, square_size: bool = False, blur_std_dev: int = 100):
+    def __init__(self, model_name: str, device: str = "cpu", use_token_mapping: bool = False, freeform_bboxes: bool = True, enlarge_boxes: int = 0, expand_position_embedding: bool = False, square_size: bool = False, blur_std_dev: int = 100):
         super().__init__(device, "crop", "max", enlarge_boxes, expand_position_embedding, square_size, blur_std_dev)
         self.model, self.postprocessor = torch.hub.load('ashkamath/mdetr:main', model_name, pretrained=True, return_postprocessor=True)
         self.model = self.model.to(device)
@@ -575,6 +575,7 @@ class MdetrExecutor(Executor):
         if self.use_token_mapping:
             self.nlp = spacy.load("en_core_web_sm")
             self.tokenizer = RobertaTokenizerFast.from_pretrained("roberta-base")
+        self.freeform_bboxes = freeform_bboxes
 
     # for output bounding box post-processing
     def box_cxcywh_to_xyxy(self, x):
@@ -606,19 +607,21 @@ class MdetrExecutor(Executor):
             probabilities = outputs['pred_logits'].softmax(-1)[0,:,wp_head_indices].sum(-1).to(self.device)
         else:
             probabilities = 1 - outputs['pred_logits'].softmax(-1)[0,:,-1].to(self.device)
-        # keep = (probabilities > 0.7)
-        keep = [probabilities.argmax().item()]
-        logits = (probabilities[keep]+1e-8).log()
+        if freeform_bboxes:
+            keep = [probabilities.argmax().item()]
+            bboxes_scaled = self.rescale_bboxes(outputs['pred_boxes'].to(self.device)[0,keep,:], image.size)
+            logits = (probabilities[keep]+1e-8).log()
+            return logits, bboxes_scaled
+        keep = list(range(outputs['pred_boxes'].shape[1]))
         bboxes_scaled = self.rescale_bboxes(outputs['pred_boxes'].to(self.device)[0,keep,:], image.size)
-        return logits, bboxes_scaled
-        """given_boxes_tensor = torch.FloatTensor([[box.left, box.top, box.right, box.bottom] for box in boxes]).to(self.device)
+        given_boxes_tensor = torch.FloatTensor([[box.left, box.top, box.right, box.bottom] for box in boxes]).to(self.device)
         ious = torchvision.ops.boxes.box_iou(given_boxes_tensor, bboxes_scaled)
         box_indices = [ious[i,:].argmax().item() for i in range(len(boxes))]
         for i in range(len(boxes)):
             if ious[i,box_indices[i]].item() >= 0.8:
                 self.box_recall[0] += 1
             self.box_recall[1] += 1
-        return (probabilities[box_indices]+1e-8).log()"""
+        return (probabilities[box_indices]+1e-8).log()
 
     def get_box_recall(self):
         return self.box_recall[0]/self.box_recall[1]

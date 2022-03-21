@@ -13,7 +13,7 @@ from argparse import Namespace
 from .ref_method import RefMethod
 from lattice import Product as L
 from heuristics import Heuristics
-from entity_extraction import Entity
+from entity_extraction import Entity, expand_chunks
 
 
 def get_conjunct(ent, chunks, heuristics: Heuristics) -> Entity:
@@ -43,6 +43,9 @@ class Parse(RefMethod):
         self.baseline_threshold = args.baseline_threshold
         self.temperature = args.temperature
         self.superlative_head_only = args.superlative_head_only
+        self.expand_chunks = args.expand_chunks
+        self.branch = not args.parse_no_branch
+        self.possessive_expand = not args.possessive_no_expand
 
         # Lists of keyword heuristics to use.
         self.heuristics = Heuristics(args)
@@ -61,6 +64,9 @@ class Parse(RefMethod):
         doc = self.nlp(caption)
         head = self.get_head(doc)
         chunks = self.get_chunks(doc)
+        if self.expand_chunks:
+            chunks = expand_chunks(doc, chunks)
+        # print(chunks)
         entity = Entity.extract(head, chunks, self.heuristics)
 
         # If no head noun is found, take the first one.
@@ -71,11 +77,11 @@ class Parse(RefMethod):
 
         # print('full caption', caption)
         # If we have found some head noun, filter based on it.
-        if entity is not None:
-            ent_probs = self.execute_entity(entity, env, chunks)
-            # probs = ent_probs
+        if entity is not None and (any(any(token.text in h.keywords for h in self.heuristics.relations+self.heuristics.superlatives) for token in doc) or not self.branch):
+            ent_probs, texts = self.execute_entity(entity, env, chunks)
             probs = L.meet(probs, ent_probs)
         else:
+            texts = [caption]
             self.counts["n_full_expr"] += 1
 
         self.counts["n_total"] += 1
@@ -84,6 +90,7 @@ class Parse(RefMethod):
             "probs": probs,
             "pred": pred,
             "box": env.boxes[pred],
+            "texts": texts
         }
 
     def execute_entity(self, 
@@ -100,7 +107,7 @@ class Parse(RefMethod):
 
         # Only use relations if the head baseline isn't certain.
         if len(probs) == 1 or len(env.boxes) == 1:
-            return probs
+            return probs, [ent.text]
 
         m1, m2 = probs[:2] # probs[(-probs).argsort()[:2]]
         text = ent.text
@@ -108,6 +115,7 @@ class Parse(RefMethod):
         if self.baseline_threshold == float("inf") or m1 < self.baseline_threshold * m2:
             self.counts["n_rec_rel"] += 1
             for tokens, ent2 in ent.relations:
+                # print(tokens, ent2)
                 self.counts["n_rel"] += 1
                 rel = None
                 # Heuristically decide which spatial relation is represented.
@@ -121,7 +129,7 @@ class Parse(RefMethod):
                     probs2 = self.execute_entity(ent2, env, chunks, root=False)
                     events = L.meet(np.expand_dims(probs2, axis=0), rel)
                     new_probs = L.join_reduce(events)
-                    rel_probs.append(new_probs)
+                    rel_probs.append((ent2.text, new_probs, probs2))
                     # probs = L.meet(probs, new_probs)
                     # probs /= probs.sum()
                     continue
@@ -145,18 +153,26 @@ class Parse(RefMethod):
                         probs = L.meet(probs, new_probs)
                     continue
                 # Otherwise, treat the relation as a possessive relation.
-                if self.args.possessive:
+                if not self.args.no_possessive:
                     # text = f'{ent.text} {" ".join(tok.text for tok in tokens)} {ent2.text}'
-                    text += f' {" ".join(tok.text for tok in tokens)} {ent2.text}'
+                    if self.possessive_expand:
+                        text = ent.expand(ent2.head)
+                    else:
+                        text += f' {" ".join(tok.text for tok in tokens)} {ent2.text}'
+                    # print('text', text)
                     poss_probs = self._filter(text, env, root=root, expand=.3)
                     # print(ent.text, '||', text)
                     # probs = L.meet(probs, poss_probs)
                     # probs = poss_probs
             # print('entity', text)
             probs = self._filter(text, env, root=root)
-            for new_probs in rel_probs:
+            texts = [text]
+            return_probs = [(probs.tolist(), probs.tolist())]
+            for (ent2_text, new_probs, ent2_only_probs) in rel_probs:
                 probs = L.meet(probs, new_probs)
                 probs /= probs.sum()
+                texts.append(ent2_text)
+                return_probs.append((probs.tolist(), ent2_only_probs.tolist()))
 
         # Only use superlatives if thresholds work out.
         m1, m2 = probs[(-probs).argsort()[:2]]
@@ -167,6 +183,8 @@ class Parse(RefMethod):
                 sup = None
                 for heuristic_index, heuristic in enumerate(self.heuristics.superlatives):
                     if any(tok.text in heuristic.keywords for tok in tokens):
+                        # print('sup', tokens)
+                        texts.append('sup:'+' '.join([tok.text for tok in tokens if tok.text in heuristic.keywords]))
                         sup = heuristic.callback(env)
                         # opposite_heuristic = self.heuristics.superlatives[self.heuristics.opposites[heuristic_index]]
                         # sup = opposite_heuristic.callback(env)
@@ -176,6 +194,9 @@ class Parse(RefMethod):
                     # Could use `probs` or `head_probs` here?
                     precond = head_probs if self.superlative_head_only else probs
                     # Version 1
+                    # print(sup)
+                    # print(probs.shape)
+                    # print('a', probs)
                     probs = L.meet(np.expand_dims(precond, axis=1)*np.expand_dims(precond, axis=0), sup).sum(axis=1)
                     # Version 2
                     # intermediate = np.expand_dims(precond, axis=0)
@@ -185,6 +206,8 @@ class Parse(RefMethod):
                     # not_opposite_probs = 1-np.sum(np.expand_dims(precond, axis=0)*sup, axis=1)
                     # probs = L.meet(precond, not_opposite_probs)
                     probs = probs / probs.sum()
+                    # print('b', probs)
+                    return_probs.append((probs.tolist(), None))
                     # # probs2 = L.comp(np.expand_dims(precond, axis=0))
                     # events = L.join(probs2, sup)
                     # new_probs = L.meet_reduce(events)
@@ -192,6 +215,9 @@ class Parse(RefMethod):
                     # print(events)
                     # probs = L.meet(probs, new_probs)
 
+        if root:
+            assert len(texts) == len(return_probs)
+            return probs, (texts, return_probs, tuple(str(chunk) for chunk in chunks.values()))
         return probs
 
     def get_head(self, doc) -> Token:

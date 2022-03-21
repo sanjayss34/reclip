@@ -21,6 +21,24 @@ def find_superlatives(tokens, heuristics) -> List[Sup]:
             return [tokens]
     return []
 
+def expand_chunks(doc, chunks):
+    expanded = {}
+    for key in chunks:
+        chunk = chunks[key]
+        start = chunk.start
+        end = chunk.end
+        for i in range(chunk.start-1, -1, -1):
+            if any(doc[j].is_ancestor(doc[i]) for j in range(chunk.start, chunk.end)):
+                if not any(any(doc[i].is_ancestor(doc[j]) for j in range(chunks[key2].start, chunks[key2].end)) for key2 in chunks if key != key2):
+                    start = i
+        for i in range(chunk.end, len(doc)):
+            if any(doc[j].is_ancestor(doc[i]) for j in range(chunk.start, chunk.end)):
+                if not any(any(doc[i].is_ancestor(doc[j]) or i == j for j in range(chunks[key2].start, chunks[key2].end)) for key2 in chunks if key != key2):
+                    end = i+1
+                else:
+                    break
+        expanded[key] = Span(doc=doc, start=start, end=end)
+    return expanded
 
 class Entity(NamedTuple):
     """Represents an entity with locative constraints extracted from the parse."""
@@ -83,6 +101,32 @@ class Entity(NamedTuple):
             relations.extend(subrel)
             superlatives.extend(subsup)
         return relations, superlatives
+
+    def expand(self, span: Span = None):
+        tokens = [token for token in self.head]
+        # print('span', span)
+        if span is None:
+            span = [None]
+        for target_token in span:
+            include = False
+            stack = [token for token in self.head]
+            while len(stack) > 0:
+                token = stack.pop()
+                if token == target_token:
+                    token2 = target_token.head
+                    while token2.head != token2:
+                        tokens.append(token2)
+                        token2 = token2.head
+                    tokens.append(token2)
+                    stack = []
+                    include = True
+                if target_token is None or include:
+                    tokens.append(token)
+                for child in token.children:
+                    stack.append(child)
+        tokens = list(set(tokens))
+        tokens = sorted(tokens, key=lambda x: x.i)
+        return ' '.join([token.text for token in tokens])
 
     def __eq__(self, other: "Entity") -> bool:
         if self.text != other.text:

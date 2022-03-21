@@ -45,7 +45,7 @@ class Heuristics:
         self.enable_relations = not args or not args.no_rel
         self.enable_superlatives = not args or not args.no_sup
         self.enable_nulls = not args or not args.no_null
-        self.enable_ternary = not args or not args.no_ternary
+        self.enable_ternary = not args or args.ternary
 
     @property
     def relations(self) -> List[RelHeuristic]:

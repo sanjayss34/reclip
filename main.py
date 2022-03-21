@@ -11,48 +11,23 @@ from tqdm import tqdm
 from interpreter import *
 from executor import *
 from methods import *
-from mock_executor import MockExecutor
-
-# from corruptions import gaussian_noise, shot_noise, impulse_noise, defocus_blur, glass_blur, motion_blur, zoom_blur, snow, frost, fog, brightness, contrast, elastic_transform, pixelate, jpeg_compression, speckle_noise, gaussian_blur, spatter, saturate
 
 METHODS_MAP = {
     "baseline": Baseline,
     "random": Random,
     "parse": Parse,
-    "gradcam": Gradcam
 }
-"""CORRUPTIONS_MAP = {
-    "gaussian_noise": gaussian_noise,
-    "shot_noise": shot_noise,
-    "impulse_noise": impulse_noise,
-    "defocus_blur": defocus_blur,
-    "glass_blur": glass_blur,
-    "motion_blur": motion_blur,
-    "zoom_blur": zoom_blur,
-    "snow": snow,
-    "frost": frost,
-    "fog": fog,
-    "brightness": brightness,
-    "contrast": contrast,
-    "elastic": elastic_transform,
-    "pixelate": pixelate,
-    "jpeg": jpeg_compression,
-    "speckle_noise": speckle_noise,
-    "gaussian_blur": gaussian_blur,
-    "spatter": spatter,
-    "saturate": saturate
-}"""
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument("--input_file", type=str, help="input file with expressions and annotations in jsonlines format")
     parser.add_argument("--image_root", type=str, help="path to images (train2014 directory of COCO)")
-    parser.add_argument("--clip_model", type=str, default="RN50x4", help="which clip model to use (should use RN50x4, ViT-B/32, or both separated by a comma")
+    parser.add_argument("--clip_model", type=str, default="RN50x16,ViT-B/32", help="which clip model to use (should use RN50x4, ViT-B/32, or both separated by a comma")
     parser.add_argument("--albef_path", type=str, default=None, help="to use ALBEF (instead of CLIP), specify the path to the ALBEF checkpoint")
-    parser.add_argument("--method", type=str, default="baseline", help="method to solve expressions")
-    parser.add_argument("--box_representation_method", type=str, default="crop", help="method of representing boxes as individual images (crop, blur, or both separated by a comma)")
-    parser.add_argument("--box_method_aggregator", type=str, default="max", help="method of combining box representation scores")
-    parser.add_argument("--box_area_threshold", type=float, default=0.05, help="minimum area (as a proportion of image area) for a box to be considered as the answer")
+    parser.add_argument("--method", type=str, default="parse", help="method to solve expressions")
+    parser.add_argument("--box_representation_method", type=str, default="crop,blur", help="method of representing boxes as individual images (crop, blur, or both separated by a comma)")
+    parser.add_argument("--box_method_aggregator", type=str, default="sum", help="method of combining box representation scores")
+    parser.add_argument("--box_area_threshold", type=float, default=0.0, help="minimum area (as a proportion of image area) for a box to be considered as the answer")
     parser.add_argument("--output_file", type=str, default=None, help="(optional) output path to save results")
     parser.add_argument("--detector_file", type=str, default=None, help="(optional) file containing object detections. if not provided, the gold object boxes will be used.")
     parser.add_argument("--mock", action="store_true", help="(optional) mock CLIP execution.")
@@ -62,30 +37,31 @@ if __name__ == "__main__":
     parser.add_argument("--enlarge_boxes", type=float, default=0.0, help="(optional) whether to enlarge boxes when passing them to the model")
     parser.add_argument("--part", type=str, default=None, help="(optional) specify how many parts to divide the dataset into and which part to run in the format NUM_PARTS,PART_NUM")
     parser.add_argument("--batch_size", type=int, default=1, help="number of instances to process in one model call (only supported for baseline model)")
-    parser.add_argument("--baseline_head", action="store_false", help="For baseline, controls whether model is called on both full expression and head noun chunk of expression")
+    parser.add_argument("--baseline_head", action="store_true", help="For baseline, controls whether model is called on both full expression and head noun chunk of expression")
     parser.add_argument("--mdetr", type=str, default=None, help="to use MDETR as the executor model, specify the name of the MDETR model")
     parser.add_argument("--albef_block_num", type=int, default=8, help="block num for ALBEF gradcam")
     parser.add_argument("--albef_mode", type=str, choices=["itm", "itc"], default="itm")
     parser.add_argument("--expand_position_embedding",action="store_true")
     parser.add_argument("--gradcam_background", action="store_true")
-    parser.add_argument("--freeform_bboxes", action="store_true")
+    parser.add_argument("--mdetr_given_bboxes", action="store_true")
     parser.add_argument("--mdetr_use_token_mapping", action="store_true")
-    parser.add_argument("--square_size", action="store_true")
+    parser.add_argument("--non_square_size", action="store_true")
     parser.add_argument("--blur_std_dev", type=int, default=100, help="standard deviation of Gaussian blur")
     parser.add_argument("--gradcam_ensemble_before", action="store_true", help="Average gradcam maps of different models before summing over the maps")
     parser.add_argument("--cache_path", type=str, default=None, help="cache features")
-    parser.add_argument("--corruption_type", type=str, default=None, choices=[None, "gaussian_noise", "shot_noise", "impulse_noise", "defocus_blur", "glass_blur", "motion_blur", "zoom_blur", "snow", "frost", "fog", "brightness", "contrast", "elastic", "pixelate", "jpeg", "speckle_noise", "gaussian_blur", "spatter", "saturate"], help="(optional) corrupt image")
-    parser.add_argument("--corruption_severity", type=int, default=0, help="(optional) corruption severity")
     # Arguments related to Parse method.
     parser.add_argument("--no_rel", action="store_true", help="Disable relation extraction.")
     parser.add_argument("--no_sup", action="store_true", help="Disable superlative extraction.")
     parser.add_argument("--no_null", action="store_true", help="Disable null keyword heuristics.")
-    parser.add_argument("--no_ternary", action="store_true", help="Disable ternary relation extraction.")
+    parser.add_argument("--ternary", action="store_true", help="Disable ternary relation extraction.")
     parser.add_argument("--baseline_threshold", type=float, default=float("inf"), help="(Parse) Threshold to use relations/superlatives.")
     parser.add_argument("--temperature", type=float, default=1., help="(Parse) Sigmoid temperature.")
     parser.add_argument("--superlative_head_only", action="store_true", help="(Parse) Superlatives only quanntify head predicate.")
     parser.add_argument("--sigmoid", action="store_true", help="(Parse) Use sigmoid, not softmax.")
-    parser.add_argument("--possessive", action="store_true", help="(Parse) Model extraneous relations as possessive relations.")
+    parser.add_argument("--no_possessive", action="store_true", help="(Parse) Model extraneous relations as possessive relations.")
+    parser.add_argument("--expand_chunks", action="store_true", help="(Parse) Expand noun chunks to include descendant tokens that aren't ancestors of tokens in other chunks")
+    parser.add_argument("--parse_no_branch", action="store_true", help="(Parse) Only do the parsing procedure if some relation/superlative keyword is in the expression")
+    parser.add_argument("--possessive_no_expand", action="store_true", help="(Parse) Expand ent2 in possessive case")
     args = parser.parse_args()
 
     with open(args.input_file) as f:
@@ -107,16 +83,16 @@ if __name__ == "__main__":
     elif args.mock:
         executor = MockExecutor()
     elif args.mdetr is not None:
-        executor = MdetrExecutor(model_name=args.mdetr, device=device, use_token_mapping=args.mdetr_use_token_mapping)
+        executor = MdetrExecutor(model_name=args.mdetr, device=device, use_token_mapping=args.mdetr_use_token_mapping, freeform_bboxes=not args.mdetr_given_bboxes)
     else:
         if args.method.split("_")[0] == "gradcam":
             if len(args.method.split("_")) == 1:
                 args.method = "baseline"
             else:
                 args.method = args.method.split("_")[1]
-            executor = ClipGradcamExecutor(clip_model=args.clip_model, box_representation_method=args.box_representation_method, device=device, gradcam_alpha=args.gradcam_alpha, expand_position_embedding=args.expand_position_embedding, square_size=args.square_size, background_subtract=args.gradcam_background, gradcam_ensemble_before=args.gradcam_ensemble_before)
+            executor = ClipGradcamExecutor(clip_model=args.clip_model, box_representation_method=args.box_representation_method, device=device, gradcam_alpha=args.gradcam_alpha, expand_position_embedding=args.expand_position_embedding, square_size=not args.non_square_size, background_subtract=args.gradcam_background, gradcam_ensemble_before=args.gradcam_ensemble_before)
         else:
-            executor = ClipExecutor(clip_model=args.clip_model, box_representation_method=args.box_representation_method, method_aggregator=args.box_method_aggregator, device=device, square_size=args.square_size, expand_position_embedding=args.expand_position_embedding, blur_std_dev=args.blur_std_dev, cache_path=args.cache_path)
+            executor = ClipExecutor(clip_model=args.clip_model, box_representation_method=args.box_representation_method, method_aggregator=args.box_method_aggregator, device=device, square_size=not args.non_square_size, expand_position_embedding=args.expand_position_embedding, blur_std_dev=args.blur_std_dev, cache_path=args.cache_path)
 
     method = METHODS_MAP[args.method](args)
     correct_count = 0
@@ -149,14 +125,9 @@ if __name__ == "__main__":
         else:
             file_name = datum["file_name"]
         img_path = os.path.join(args.image_root, file_name)
-        # if not os.path.exists(img_path):
-        #     img_path = os.path.join(args.image_root, file_name.split("/")[-1])
         img = Image.open(img_path).convert('RGB')
-        if args.corruption_type is not None:
-            corruption = CORRUPTIONS_MAP[args.corruption_type]
-            corrupted_image = Image.fromarray(np.uint8(corruption(np.array(img), args.corruption_severity)))
         gold_boxes = [Box(x=ann["bbox"][0], y=ann["bbox"][1], w=ann["bbox"][2], h=ann["bbox"][3]) for ann in datum["anns"]]
-        print(datum["image_id"])
+        # print(datum["image_id"])
         if isinstance(datum["ann_id"], int) or isinstance(datum["ann_id"], str):
             datum["ann_id"] = [datum["ann_id"]]
         assert isinstance(datum["ann_id"], list)
@@ -168,83 +139,67 @@ if __name__ == "__main__":
                     boxes = [Box(x=0, y=0, w=img.width, h=img.height)]
             else:
                 boxes = gold_boxes
-            env = Environment(img, boxes, executor, args.freeform_bboxes, str(datum["image_id"]))
+            env = Environment(img, boxes, executor, (args.mdetr is not None and not args.mdetr_given_bboxes), str(datum["image_id"]))
             if args.shuffle_words:
                 words = sentence["raw"].lower().split()
                 random.shuffle(words)
-                results = method.execute(" ".join(words), env)
+                result = method.execute(" ".join(words), env)
             else:
-                results = method.execute(sentence["raw"].lower(), env)
+                result = method.execute(sentence["raw"].lower(), env)
             boxes = env.boxes
-            batch_boxes.append(boxes)
-            batch_gold_boxes.append(gold_boxes)
-            batch_gold_index.append(gold_index)
-            batch_file_names.append(file_name)
-            batch_sentences.append(sentence)
-            batch_count += 1
-            if batch_count % args.batch_size == 0:
-                if isinstance(results, dict):
-                    results = [results]
-                for result, boxes, gold_boxes, gold_index, file_name, sentence in zip(results, batch_boxes, batch_gold_boxes, batch_gold_index, batch_file_names, batch_sentences):
-                    print(sentence["raw"].lower())
-                    correct = False
-                    for g_index in gold_index:
-                        if iou(boxes[result["pred"]], gold_boxes[g_index]) > 0.5:
-                            correct = True
-                            break
-                    if correct:
-                        result["correct"] = 1
-                        correct_count += 1
-                    else:
-                        result["correct"] = 0
-                    if args.detector_file:
-                        argmax_ious = []
-                        max_ious = []
-                        # print(gold_index)
-                        for g_index in gold_index:
-                            ious = [iou(box, gold_boxes[g_index]) for box in boxes]
-                            argmax_iou = -1
-                            max_iou = 0
-                            if max(ious) >= 0.5:
-                                for index, value in enumerate(ious):
-                                    if value > max_iou:
-                                        max_iou = value
-                                        argmax_iou = index
-                            argmax_ious.append(argmax_iou)
-                            max_ious.append(max_iou)
-                        argmax_iou = -1
-                        max_iou = 0
-                        if max(max_ious) >= 0.5:
-                            for index, value in zip(argmax_ious, max_ious):
-                                if value > max_iou:
-                                    max_iou = value
-                                    argmax_iou = index
-                        result["gold_index"] = argmax_iou
-                    else:
-                        result["gold_index"] = gold_index
-                    result["bboxes"] = [[box.left, box.top, box.right, box.bottom] for box in boxes]
-                    result["file_name"] = file_name
-                    result["probabilities"] = result["probs"]
-                    # print(list(zip(result["bboxes"], result["probs"].tolist())))
-                    result["text"] = sentence["raw"].lower()
-                    # if gradcam:
-                    #     result["gradcam"] = executor(sentence["raw"].lower(), img, boxes, return_gradcam=True).tolist()
-                    if args.output_file:
-                        # Serialize numpy arrays for JSON.
-                        for key in result:
-                            if isinstance(result[key], np.ndarray):
-                                result[key] = result[key].tolist()
-                            if isinstance(result[key], np.int64):
-                                result[key] = result[key].item()
-                        output_file.write(json.dumps(result)+"\n")
-                    total_count += 1
-                    print(f"est_acc: {100 * correct_count / total_count:.3f}")
-                batch_boxes = []
-                batch_gold_boxes = []
-                batch_gold_index = []
-                batch_file_names = []
-                batch_sentences = []
-                batch_count = 0
+            print(sentence["raw"].lower())
+            correct = False
+            for g_index in gold_index:
+                if iou(boxes[result["pred"]], gold_boxes[g_index]) > 0.5:
+                    correct = True
+                    break
+            if correct:
+                result["correct"] = 1
+                correct_count += 1
+            else:
+                result["correct"] = 0
+            if args.detector_file:
+                argmax_ious = []
+                max_ious = []
+                # print(gold_index)
+                for g_index in gold_index:
+                    ious = [iou(box, gold_boxes[g_index]) for box in boxes]
+                    argmax_iou = -1
+                    max_iou = 0
+                    if max(ious) >= 0.5:
+                        for index, value in enumerate(ious):
+                            if value > max_iou:
+                                max_iou = value
+                                argmax_iou = index
+                    argmax_ious.append(argmax_iou)
+                    max_ious.append(max_iou)
+                argmax_iou = -1
+                max_iou = 0
+                if max(max_ious) >= 0.5:
+                    for index, value in zip(argmax_ious, max_ious):
+                        if value > max_iou:
+                            max_iou = value
+                            argmax_iou = index
+                result["gold_index"] = argmax_iou
+            else:
+                result["gold_index"] = gold_index
+            result["bboxes"] = [[box.left, box.top, box.right, box.bottom] for box in boxes]
+            result["file_name"] = file_name
+            result["probabilities"] = result["probs"]
+            # print(list(zip(result["bboxes"], result["probs"].tolist())))
+            result["text"] = sentence["raw"].lower()
+            # if gradcam:
+            #     result["gradcam"] = executor(sentence["raw"].lower(), img, boxes, return_gradcam=True).tolist()
+            if args.output_file:
+                # Serialize numpy arrays for JSON.
+                for key in result:
+                    if isinstance(result[key], np.ndarray):
+                        result[key] = result[key].tolist()
+                    if isinstance(result[key], np.int64):
+                        result[key] = result[key].item()
+                output_file.write(json.dumps(result)+"\n")
+            total_count += 1
+            print(f"est_acc: {100 * correct_count / total_count:.3f}")
 
     if args.output_file:
         output_file.close()
