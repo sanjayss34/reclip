@@ -17,8 +17,7 @@ from albef.model import ALBEF
 from albef.utils import *
 from albef.vit import interpolate_pos_embed
 
-from torchray.attribution.grad_cam import gradient_to_grad_cam_saliency
-from torchray.attribution.common import Probe, get_module
+from pytorch_grad_cam.activations_and_gradients import ActivationsAndGradients
 
 class Executor:
     def __init__(self, device: str = "cpu", box_representation_method: str = "crop", method_aggregator: str = "max", enlarge_boxes: int = 0, expand_position_embedding: bool = False, square_size: bool = False, blur_std_dev: int = 100, cache_path: str = None) -> None:
@@ -280,8 +279,6 @@ class ClipGradcamExecutor(ClipExecutor):
         # print(len(self.clip_models), len(self.models), len(self.preprocesses), len(self.gradcam_alpha))
         for model_name, model, preprocess, gradcam_alpha in zip(self.clip_models, self.models, self.preprocesses, self.gradcam_alpha):
             if "RN" in model_name:
-                saliency_layer = get_module(model.visual, "layer4")
-                probe = Probe(saliency_layer, target='output')
                 if self.expand_position_embedding:
                     model_spatial_dim = int((model.visual.attnpool.positional_embedding.shape[0]-1)**0.5)
                     patch_size = model.visual.input_resolution // model_spatial_dim
@@ -306,12 +303,15 @@ class ClipGradcamExecutor(ClipExecutor):
                     print(model.visual.attnpool.positional_embedding.shape, image_t.shape, model_spatial_dim, patch_size, image.size)
                 else:
                     image_t = preprocess(image).unsqueeze(0).to(self.device)
+                activations_and_grads = ActivationsAndGradients(model, [model.visual.layer4], None)
                 height_width_ratio = image_t.shape[2] / image_t.shape[1]
-                logits_per_image, logits_per_text = model(image_t, text_tensor)
+                image_t = torch.autograd.Variable(image_t)
+                logits_per_image, logits_per_text = activations_and_grads(image_t, text_tensor)
                 logits = torch.diagonal(logits_per_image, 0)
                 loss = logits.sum()
                 loss.backward()
-                gradcam = gradient_to_grad_cam_saliency(probe.data[0])
+                grads = activations_and_grads.gradients[0].mean(dim=(2, 3), keepdim=True)
+                gradcam = (grads*activations_and_grads.activations[0]).sum(1, keepdim=True).float().clamp(min=0)
                 assert len(gradcam.shape) == 4
                 gradcam = torch.nn.functional.interpolate(gradcam,size = (image.height,image.width), mode='bicubic').squeeze()
                 if self.expand_position_embedding:

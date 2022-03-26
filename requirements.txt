@@ -8,13 +8,11 @@ clip @ git+https://github.com/openai/CLIP.git
 cymem==2.0.5
 en-core-web-sm @ https://github.com/explosion/spacy-models/releases/download/en_core_web_sm-3.0.0/en_core_web_sm-3.0.0-py3-none-any.whl
 filelock==3.0.12
-Flask==2.0.1
 ftfy==6.0.3
 huggingface-hub==0.0.12
 idna==2.10
 iniconfig==1.1.1
 itsdangerous==2.0.1
-Jinja2==3.0.1
 joblib==1.0.1
 MarkupSafe==2.0.1
 murmurhash==1.0.5
@@ -45,7 +43,6 @@ thinc==8.0.7
 timm==0.4.12
 tokenizers==0.10.3
 toml==0.10.2
-torchray==1.0.0.2
 tqdm==4.61.2
 transformers==4.9.0
 typer==0.3.2
