@@ -1,3 +1,6 @@
+# Adapted from code in https://github.com/airsplay/py-bottom-up-attention
+# Please see https://github.com/airsplay/py-bottom-up-attention/blob/master/LICENSE for the Apache 2.0 License of that code
+
 import os
 import sys
 import io
