@@ -18,8 +18,8 @@ from apex import amp
 from horovod import torch as hvd
 from cytoolz import concat
 
-from data import (PrefetchLoader, DetectFeatLmdb, ReTxtTokLmdb,
-                  ReEvalDataset, re_eval_collate, DetectFeatPt, ReEvalJsonDataset, ReTxtTokJson)
+from data import (PrefetchLoader,
+                  re_eval_collate, DetectFeatPt, ReEvalJsonDataset, ReTxtTokJson)
 from data.sampler import DistributedSampler
 from model.re import UniterForReferringExpressionComprehension
 
@@ -93,9 +93,7 @@ def main(opts):
             eval_dataset = ReEvalJsonDataset(
                 eval_txt_db, eval_img_db)
         else:
-            eval_txt_db = ReTxtTokLmdb(txt_db, -1)
-            eval_dataset = ReEvalDataset(
-                eval_txt_db, eval_img_db, use_gt_feat=img_db_type == "gt")
+            assert False, "Original data format not supported"
 
         sampler = DistributedSampler(eval_dataset, num_replicas=n_gpu,
                                      rank=rank, shuffle=False)

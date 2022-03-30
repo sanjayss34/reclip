@@ -16,7 +16,6 @@ from torch.utils.data import Dataset, ConcatDataset
 import horovod.torch as hvd
 from tqdm import tqdm
 import lmdb
-from lz4.frame import compress, decompress
 
 import msgpack
 import msgpack_numpy
@@ -143,133 +142,6 @@ class DetectFeatLmdb(object):
         img_bb = torch.tensor(img_dump['norm_bb'][:nbb, :]).float()
         return img_feat, img_bb
 
-
-@contextmanager
-def open_lmdb(db_dir, readonly=False):
-    db = TxtLmdb(db_dir, readonly)
-    try:
-        yield db
-    finally:
-        del db
-
-
-class TxtLmdb(object):
-    def __init__(self, db_dir, readonly=True):
-        self.readonly = readonly
-        if readonly:
-            # training
-            self.env = lmdb.open(db_dir,
-                                 readonly=True, create=False,
-                                 readahead=not _check_distributed())
-            self.txn = self.env.begin(buffers=True)
-            self.write_cnt = None
-        else:
-            # prepro
-            self.env = lmdb.open(db_dir, readonly=False, create=True,
-                                 map_size=4 * 1024**4)
-            self.txn = self.env.begin(write=True)
-            self.write_cnt = 0
-
-    def __del__(self):
-        if self.write_cnt:
-            self.txn.commit()
-        self.env.close()
-
-    def __getitem__(self, key):
-        return msgpack.loads(decompress(self.txn.get(key.encode('utf-8'))),
-                             raw=False)
-
-    def __setitem__(self, key, value):
-        # NOTE: not thread safe
-        if self.readonly:
-            raise ValueError('readonly text DB')
-        ret = self.txn.put(key.encode('utf-8'),
-                           compress(msgpack.dumps(value, use_bin_type=True)))
-        self.write_cnt += 1
-        if self.write_cnt % 1000 == 0:
-            self.txn.commit()
-            self.txn = self.env.begin(write=True)
-            self.write_cnt = 0
-        return ret
-
-
-class TxtTokLmdb(object):
-    def __init__(self, db_dir, max_txt_len=60):
-        if max_txt_len == -1:
-            self.id2len = json.load(open(f'{db_dir}/id2len.json'))
-        else:
-            self.id2len = {
-                id_: len_
-                for id_, len_ in json.load(open(f'{db_dir}/id2len.json')
-                                           ).items()
-                if len_ <= max_txt_len
-            }
-        self.db_dir = db_dir
-        self.db = TxtLmdb(db_dir, readonly=True)
-        meta = json.load(open(f'{db_dir}/meta.json', 'r'))
-        self.cls_ = meta['CLS']
-        self.sep = meta['SEP']
-        self.mask = meta['MASK']
-        self.v_range = meta['v_range']
-
-    def __getitem__(self, id_):
-        txt_dump = self.db[id_]
-        return txt_dump
-
-    def combine_inputs(self, *inputs):
-        input_ids = [self.cls_]
-        for ids in inputs:
-            input_ids.extend(ids + [self.sep])
-        return torch.tensor(input_ids)
-
-    @property
-    def txt2img(self):
-        txt2img = json.load(open(f'{self.db_dir}/txt2img.json'))
-        return txt2img
-
-    @property
-    def img2txts(self):
-        img2txts = json.load(open(f'{self.db_dir}/img2txts.json'))
-        return img2txts
-
-
-def get_ids_and_lens(db):
-    assert isinstance(db, TxtTokLmdb)
-    lens = []
-    ids = []
-    for id_ in list(db.id2len.keys())[hvd.rank()::hvd.size()]:
-        lens.append(db.id2len[id_])
-        ids.append(id_)
-    return lens, ids
-
-
-class DetectFeatTxtTokDataset(Dataset):
-    def __init__(self, txt_db, img_db):
-        assert isinstance(txt_db, TxtTokLmdb)
-        assert isinstance(img_db, DetectFeatLmdb)
-        self.txt_db = txt_db
-        self.img_db = img_db
-        txt_lens, self.ids = get_ids_and_lens(txt_db)
-
-        txt2img = txt_db.txt2img
-        self.lens = [tl + self.img_db.name2nbb[txt2img[id_]]
-                     for tl, id_ in zip(txt_lens, self.ids)]
-
-    def __len__(self):
-        return len(self.ids)
-
-    def __getitem__(self, i):
-        id_ = self.ids[i]
-        example = self.txt_db[id_]
-        return example
-
-    def _get_img_feat(self, fname):
-        img_feat, bb = self.img_db[fname]
-        img_bb = torch.cat([bb, bb[:, 4:5]*bb[:, 5:]], dim=-1)
-        num_bb = img_feat.size(0)
-        return img_feat, img_bb, num_bb
-
-
 def pad_tensors(tensors, lens=None, pad=0):
     """B x [T, ...]"""
     if lens is None:
@@ -295,36 +167,3 @@ def get_gather_index(txt_lens, num_bbs, batch_size, max_len, out_size):
         gather_index.data[i, tl:tl+nbb] = torch.arange(max_len, max_len+nbb,
                                                        dtype=torch.long).data
     return gather_index
-
-
-class ConcatDatasetWithLens(ConcatDataset):
-    """ A thin wrapper on pytorch concat dataset for lens batching """
-    def __init__(self, datasets):
-        super().__init__(datasets)
-        self.lens = [l for dset in datasets for l in dset.lens]
-
-    def __getattr__(self, name):
-        return self._run_method_on_all_dsets(name)
-
-    def _run_method_on_all_dsets(self, name):
-        def run_all(*args, **kwargs):
-            return [dset.__getattribute__(name)(*args, **kwargs)
-                    for dset in self.datasets]
-        return run_all
-
-
-class ImageLmdbGroup(object):
-    def __init__(self, conf_th, max_bb, min_bb, num_bb, compress):
-        self.path2imgdb = {}
-        self.conf_th = conf_th
-        self.max_bb = max_bb
-        self.min_bb = min_bb
-        self.num_bb = num_bb
-        self.compress = compress
-
-    def __getitem__(self, path):
-        img_db = self.path2imgdb.get(path, None)
-        if img_db is None:
-            img_db = DetectFeatLmdb(path, self.conf_th, self.max_bb,
-                                    self.min_bb, self.num_bb, self.compress)
-        return img_db

@@ -2,7 +2,7 @@ FROM nvcr.io/nvidia/pytorch:19.05-py3
 
 # basic python packages
 RUN pip install pytorch-pretrained-bert==0.6.2 \
-                tensorboardX==1.7 ipdb==0.12 lz4==2.1.9 lmdb==0.97
+                tensorboardX==1.7 ipdb==0.12 lmdb==0.97
 
 ####### horovod for multi-GPU (distributed) training #######
 

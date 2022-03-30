@@ -20,8 +20,7 @@ from horovod import torch as hvd
 
 from tqdm import tqdm
 
-from data import (PrefetchLoader, DetectFeatLmdb,
-                  ReTxtTokLmdb, ReDataset, ReEvalDataset,
+from data import (PrefetchLoader,
                   ReTrainJsonDataset, ReEvalJsonDataset,
                   ReTxtTokJson, DetectFeatPt,
                   re_collate, re_eval_collate)
@@ -49,9 +48,7 @@ def create_dataloader(img_path, txt_path, batch_size, is_train,
         img_db = DetectFeatPt(img_path, conf_th, opts.max_bb,
                               opts.min_bb, num_bb, opts.compressed_db)
     else:
-        img_db = DetectFeatLmdb(img_path, conf_th, opts.max_bb, opts.min_bb,
-                                num_bb, opts.compressed_db)
-        txt_db = ReTxtTokLmdb(txt_path, opts.max_txt_len if is_train else -1)
+        assert False, "Original data format not supported"
     if is_train:
         dset = dset_cls(txt_db, img_db)
     else:
@@ -138,12 +135,7 @@ def main(opts):
                                            opts.val_batch_size, False,
                                            ReEvalJsonDataset, re_eval_collate, opts)
     else:
-        train_dataloader = create_dataloader(opts.train_img_db, opts.train_txt_db,
-                                             opts.train_batch_size, True,
-                                             ReDataset, re_collate, opts)
-        val_dataloader = create_dataloader(opts.val_img_db, opts.val_txt_db,
-                                           opts.val_batch_size, False,
-                                           ReEvalDataset, re_eval_collate, opts)
+        assert False, "Original data format not supported"
 
     # Prepare model
     if opts.checkpoint:
